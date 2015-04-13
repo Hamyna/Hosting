@@ -13,14 +13,14 @@ using Microsoft.AspNet.Hosting.Startup;
 using Microsoft.Framework.ConfigurationModel;
 using Microsoft.Framework.DependencyInjection;
 
-namespace Microsoft.AspNet.Hosting
+namespace Microsoft.AspNet.Hosting.Internal
 {
     public class HostingEngine : IHostingEngine
     {
         private readonly IServiceCollection _applicationServiceCollection;
         private readonly IStartupLoader _startupLoader;
         private readonly ApplicationLifetime _applicationLifetime;
-        private readonly IHostingEnvironment _hostingEnvironment;
+        private readonly string _environment;
         private readonly IConfiguration _config;
 
         private IServiceProvider _applicationServices;
@@ -34,14 +34,13 @@ namespace Microsoft.AspNet.Hosting
         internal string ServerFactoryLocation { get; set; }
         private IServerInformation _serverInstance;
 
-        public HostingEngine(IServiceCollection appServices, IStartupLoader startupLoader, IConfiguration config, IHostingEnvironment hostingEnv, string appName)
+        public HostingEngine(IServiceCollection appServices, IStartupLoader startupLoader, IConfiguration config, string environmentName)
         {
             _config = config ?? new Configuration();
             _applicationServiceCollection = appServices;
             _startupLoader = startupLoader;
-            StartupAssemblyName = appName;
             _applicationLifetime = new ApplicationLifetime();
-            _hostingEnvironment = hostingEnv;
+            _environment = environmentName;
         }
 
         public virtual IDisposable Start()
@@ -87,7 +86,7 @@ namespace Microsoft.AspNet.Hosting
             var diagnosticMessages = new List<string>();
             Startup = _startupLoader.Load(
                 StartupAssemblyName,
-                _hostingEnvironment.EnvironmentName,
+                _environment,
                 diagnosticMessages);
 
             if (Startup == null)
