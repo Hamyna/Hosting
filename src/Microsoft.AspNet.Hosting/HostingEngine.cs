@@ -7,6 +7,7 @@ using System.Linq;
 using System.Threading;
 using Microsoft.AspNet.Builder;
 using Microsoft.AspNet.Hosting.Builder;
+using Microsoft.AspNet.Hosting.Internal;
 using Microsoft.AspNet.Hosting.Server;
 using Microsoft.AspNet.Hosting.Startup;
 using Microsoft.Framework.ConfigurationModel;
@@ -22,20 +23,15 @@ namespace Microsoft.AspNet.Hosting
         private readonly IHostingEnvironment _hostingEnvironment;
         private readonly IConfiguration _config;
 
-        // Start/ApplicationServices block use methods
-        private bool _useDisabled;
-        
-        private IApplicationBuilderFactory _builderFactory;
-        private IApplicationBuilder _builder;
         private IServiceProvider _applicationServices;
 
         // Only one of these should be set
-        private string _startupAssemblyName;
-        private StartupMethods _startup;
+        internal string StartupAssemblyName { get; set; }
+        internal StartupMethods Startup { get; set; }
 
         // Only one of these should be set
-        private string _serverFactoryLocation;
-        private IServerFactory _serverFactory;
+        internal IServerFactory ServerFactory { get; set; }
+        internal string ServerFactoryLocation { get; set; }
         private IServerInformation _serverInstance;
 
         public HostingEngine(IServiceCollection appServices, IStartupLoader startupLoader, IConfiguration config, IHostingEnvironment hostingEnv, string appName)
@@ -43,7 +39,7 @@ namespace Microsoft.AspNet.Hosting
             _config = config ?? new Configuration();
             _applicationServiceCollection = appServices;
             _startupLoader = startupLoader;
-            _startupAssemblyName = appName;
+            StartupAssemblyName = appName;
             _applicationLifetime = new ApplicationLifetime();
             _hostingEnvironment = hostingEnv;
         }
@@ -51,19 +47,17 @@ namespace Microsoft.AspNet.Hosting
         public virtual IDisposable Start()
         {
             EnsureApplicationServices();
-            EnsureBuilder();
-            EnsureServer();
 
-            var applicationDelegate = BuildApplicationDelegate();
+            var application = BuildApplication();
 
             var _contextFactory = _applicationServices.GetRequiredService<IHttpContextFactory>();
             var _contextAccessor = _applicationServices.GetRequiredService<IHttpContextAccessor>();
-            var server = _serverFactory.Start(_serverInstance,
+            var server = ServerFactory.Start(_serverInstance,
                 features =>
                 {
                     var httpContext = _contextFactory.CreateHttpContext(features);
                     _contextAccessor.HttpContext = httpContext;
-                    return applicationDelegate(httpContext);
+                    return application(httpContext);
                 });
 
             return new Disposable(() =>
@@ -76,75 +70,65 @@ namespace Microsoft.AspNet.Hosting
 
         private void EnsureApplicationServices()
         {
-            _useDisabled = true;
             EnsureStartup();
 
             _applicationServiceCollection.AddInstance<IApplicationLifetime>(_applicationLifetime);
 
-            _applicationServices = _startup.ConfigureServicesDelegate(_applicationServiceCollection);
+            _applicationServices = Startup.ConfigureServicesDelegate(_applicationServiceCollection);
         }
 
         private void EnsureStartup()
         {
-            if (_startup != null)
+            if (Startup != null)
             {
                 return;
             }
 
             var diagnosticMessages = new List<string>();
-            _startup = _startupLoader.Load(
-                _startupAssemblyName,
+            Startup = _startupLoader.Load(
+                StartupAssemblyName,
                 _hostingEnvironment.EnvironmentName,
                 diagnosticMessages);
 
-            if (_startup == null)
+            if (Startup == null)
             {
                 throw new ArgumentException(
                     diagnosticMessages.Aggregate("Failed to find a startup entry point for the web application.", (a, b) => a + "\r\n" + b),
-                    _startupAssemblyName);
+                    StartupAssemblyName);
             }
         }
 
-        private void EnsureBuilder()
+        private RequestDelegate BuildApplication()
         {
-            if (_builderFactory == null)
-            {
-                _builderFactory = _applicationServices.GetRequiredService<IApplicationBuilderFactory>();
-            }
+            var builderFactory = _applicationServices.GetRequiredService<IApplicationBuilderFactory>();
+            var builder = builderFactory.CreateBuilder();
+            builder.ApplicationServices = _applicationServices;
 
-            _builder = _builderFactory.CreateBuilder();
-            _builder.ApplicationServices = _applicationServices;
-        }
-
-        private void EnsureServer()
-        {
-            if (_serverFactory == null)
+            if (ServerFactory == null)
             {
+
                 // Blow up if we don't have a server set at this point
-                if (_serverFactoryLocation == null)
+                if (ServerFactoryLocation == null)
                 {
-                    throw new InvalidOperationException("UseStartup() is required for Start()");
+                    throw new InvalidOperationException("IHostingBuilder.UseServer() is required for " + nameof(Start) + "()");
                 }
 
-                _serverFactory = _applicationServices.GetRequiredService<IServerLoader>().LoadServerFactory(_serverFactoryLocation);
+                ServerFactory = _applicationServices.GetRequiredService<IServerLoader>().LoadServerFactory(ServerFactoryLocation);
             }
 
-            _serverInstance = _serverFactory.Initialize(_config);
-            _builder.Server = _serverInstance;
-        }
+            _serverInstance = ServerFactory.Initialize(_config);
+            builder.Server = _serverInstance;
 
-        private RequestDelegate BuildApplicationDelegate()
-        {
             var startupFilters = _applicationServices.GetService<IEnumerable<IStartupFilter>>();
-            var configure = _startup.ConfigureDelegate;
+            var configure = Startup.ConfigureDelegate;
             foreach (var filter in startupFilters)
             {
-                configure = filter.Configure(_builder, configure);
+                configure = filter.Configure(builder, configure);
             }
 
-            configure(_builder);
+            configure(builder);
 
-            return _builder.Build();
+            return builder.Build();
         }
 
         public IServiceProvider ApplicationServices
@@ -154,69 +138,6 @@ namespace Microsoft.AspNet.Hosting
                 EnsureApplicationServices();
                 return _applicationServices;
             }
-        }
-
-        private void CheckUseAllowed()
-        {
-            if (_useDisabled)
-            {
-                throw new InvalidOperationException("HostingEngine has already been started.");
-            }
-        }
-
-        // Consider cutting
-        public IHostingEngine UseEnvironment(string environment)
-        {
-            CheckUseAllowed();
-            _hostingEnvironment.EnvironmentName = environment;
-            return this;
-        }
-
-        public IHostingEngine UseServer(string assemblyName)
-        {
-            CheckUseAllowed();
-            _serverFactoryLocation = assemblyName;
-            return this;
-        }
-
-        public IHostingEngine UseServer(IServerFactory factory)
-        {
-            CheckUseAllowed();
-            _serverFactory = factory;
-            return this;
-        }
-
-        public IHostingEngine UseStartup(string startupAssemblyName)
-        {
-            CheckUseAllowed();
-            _startupAssemblyName = startupAssemblyName;
-            return this;
-        }
-
-        public IHostingEngine UseStartup(Action<IApplicationBuilder> configureApp)
-        {
-            return UseStartup(configureApp, configureServices: null);
-        }
-
-        public IHostingEngine UseStartup(Action<IApplicationBuilder> configureApp, ConfigureServicesDelegate configureServices)
-        {
-            CheckUseAllowed();
-            _startup = new StartupMethods(configureApp, configureServices);
-            return this;
-        }
-
-        public IHostingEngine UseStartup(Action<IApplicationBuilder> configureApp, Action<IServiceCollection> configureServices)
-        {
-            CheckUseAllowed();
-            _startup = new StartupMethods(configureApp, 
-                services => {
-                    if (configureServices != null)
-                    {
-                        configureServices(services);
-                    }
-                    return services.BuildServiceProvider();
-                });
-            return this;
         }
 
         private class Disposable : IDisposable
