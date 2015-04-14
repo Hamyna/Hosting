@@ -112,7 +112,6 @@ namespace Microsoft.AspNet.Hosting.Internal
 
             if (ServerFactory == null)
             {
-
                 // Blow up if we don't have a server set at this point
                 if (ServerFactoryLocation == null)
                 {
